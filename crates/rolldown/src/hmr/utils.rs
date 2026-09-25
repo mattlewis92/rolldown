@@ -237,3 +237,60 @@ impl<'any, 'ast> HmrAstBuilder<'any, 'ast> for ScopeHoistingFinalizer<'any, 'ast
     CJS_MODULE_REF
   }
 }
+
+const LAZY_PROXY_QUERY: &str = "?rolldown-lazy=1";
+
+/// The id of the module a lazy proxy stands for: the id its chunk registers a factory under.
+/// `None` when `stable_id` is not a lazy proxy.
+pub fn lazy_proxy_target(stable_id: &str) -> Option<&str> {
+  stable_id.strip_suffix(LAZY_PROXY_QUERY)
+}
+
+/// Writes into `buf` the stable id of the lazy proxy that stands for `target_stable_id`. The
+/// proxy exists only when some module calls `import()` on the target.
+pub fn write_lazy_proxy_id(buf: &mut String, target_stable_id: &str) {
+  buf.clear();
+  buf.push_str(target_stable_id);
+  buf.push_str(LAZY_PROXY_QUERY);
+}
+
+/// `__rolldown_runtime__.requestLazy("<stable_real_id>", "<proxy_module_id>")`
+///
+/// The one shape both codegen paths emit for a lazy boundary, so a boundary never becomes a
+/// chunk the browser fetches.
+///
+/// The emitted code carries ids only. The runtime's `loadLazyChunk` builds the request, so the
+/// dev server decides the URL (Vite adds its `base`).
+pub fn create_request_lazy_call<'ast, B>(
+  proxy_module_id: &str,
+  stable_proxy_id: &str,
+  builder: &B,
+) -> ast::Expression<'ast>
+where
+  B: oxc::ast::builder::GetAstBuilder<'ast> + GetAllocator<'ast>,
+{
+  ast::Expression::new_call_expression(
+    SPAN,
+    ast::Expression::new_identifier(SPAN, "__rolldown_runtime__.requestLazy", builder),
+    None,
+    [
+      ast::Argument::new_string_literal(
+        SPAN,
+        ast::Str::from_str_in(
+          lazy_proxy_target(stable_proxy_id).unwrap_or(stable_proxy_id),
+          builder,
+        ),
+        None,
+        builder,
+      ),
+      ast::Argument::new_string_literal(
+        SPAN,
+        ast::Str::from_str_in(proxy_module_id, builder),
+        None,
+        builder,
+      ),
+    ],
+    false,
+    builder,
+  )
+}

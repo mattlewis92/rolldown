@@ -271,6 +271,74 @@ test.concurrent(
   },
 );
 
+// A lazy proxy never runs in the client: `requestLazy` runs the real module. So no patch
+// carries a factory for a proxy. Two edits could bring one in: the real module changes its
+// interop, which the proxy's own `import()` of it reads, and a new `import()` creates a new
+// proxy.
+test.concurrent(
+  'an HMR patch carries no factory for a lazy proxy',
+  { retry: TEST_RETRY, timeout: TEST_TIMEOUT },
+  async ({ task, expect, onTestFinished }) => {
+    const retryCount = task.result?.retryCount ?? 0;
+    const { dir: cwd } = createTestWithMultiFiles('dev-lazy-proxy-not-in-patch', retryCount, {
+      'main.js': `import('./lazy.js');\n`,
+      'lazy.js': `export const value = 'esm';\n`,
+      'other.js': `export const other = 'other';\n`,
+    });
+
+    const onHmrUpdates = vi.fn();
+    const engine = await dev(
+      {
+        cwd,
+        input: './main.js',
+        experimental: { devMode: { lazy: true } },
+      },
+      { dir: path.join(cwd, 'dist') },
+      { onHmrUpdates },
+    );
+    onTestFinished(async () => {
+      await engine.close();
+      if (!process.env.CI) {
+        fs.rmSync(cwd, { recursive: true, force: true });
+      }
+    });
+
+    await engine.run();
+    await engine.registerClient('client');
+    const chunk = await engine.compileEntry(
+      `${path.join(cwd, 'lazy.js')}?rolldown-lazy=1`,
+      'client',
+    );
+    await engine.notifyPayloadDelivered(chunk.filename);
+    await engine.ensureLatestBuildOutput();
+
+    const patches = () =>
+      onHmrUpdates.mock.calls
+        .flatMap(([result]) => (result instanceof Error ? [] : result.updates))
+        .filter((u) => u.clientId === 'client' && u.update.type === 'Patch')
+        .map((u) => (u.update as { type: 'Patch'; code: string }).code);
+    const lazyFactory = /registerFactory\("[^"]*lazy\.js"/;
+    const proxyFactory = /registerFactory\("[^"]*\?rolldown-lazy=1"/;
+
+    // ESM to CommonJS
+    onHmrUpdates.mockClear();
+    await editFile(path.join(cwd, 'lazy.js'), `module.exports = { value: 'cjs' };\n`);
+    await expect.poll(() => patches().length, { timeout: 20_000 }).toBeGreaterThan(0);
+    expect(patches()[0]).toMatch(lazyFactory);
+    expect(patches()[0]).not.toMatch(proxyFactory);
+
+    // a new lazy `import()`, so a new proxy
+    onHmrUpdates.mockClear();
+    await editFile(
+      path.join(cwd, 'lazy.js'),
+      `module.exports = { value: 'cjs', load: () => import('./other.js') };\n`,
+    );
+    await expect.poll(() => patches().length, { timeout: 20_000 }).toBeGreaterThan(0);
+    expect(patches()[0]).toMatch(lazyFactory);
+    expect(patches()[0]).not.toMatch(proxyFactory);
+  },
+);
+
 // https://github.com/rolldown/rolldown/issues/10487
 //
 // Deleting a still-imported file must fail the round with an unresolved-import
