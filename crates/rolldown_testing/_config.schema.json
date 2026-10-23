@@ -1433,6 +1433,13 @@
             "null"
           ],
           "format": "double"
+        },
+        "allowImportMetaUrl": {
+          "description": "Also accept members that read `import.meta.url`, which inside a factory is the carrier's\nURL. Honoured only when `chunkFileNames` and `entryFileNames` are strings naming one\ndirectory, so a URL resolved against it is the same from every copy.",
+          "type": [
+            "boolean",
+            "null"
+          ]
         }
       },
       "additionalProperties": false

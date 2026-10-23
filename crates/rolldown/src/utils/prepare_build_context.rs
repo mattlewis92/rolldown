@@ -263,6 +263,7 @@ pub fn prepare_build_context(
     .filter(|options| options.max_size.unwrap_or(0.0) > 0.0)
     .map(|options| NormalizedInlineCommonChunksOptions {
       max_size: options.max_size.unwrap_or(0.0) as usize,
+      allow_import_meta_url: options.allow_import_meta_url.unwrap_or(false),
       exclude: options.exclude.clone().unwrap_or_default(),
     });
   // Without strict execution order only chunks whose members are wrapped or free of side effects

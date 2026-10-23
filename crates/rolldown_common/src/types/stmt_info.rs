@@ -132,7 +132,12 @@ bitflags! {
         const ReExportDynamicExports = 1 << 2;
         /// Statement contains non-static dynamic import like `import(foo)` or `import('a' + 'b')`
         const NonStaticDynamicImport = 1 << 3;
+        /// Statement uses `import.meta` other than as the object of `import.meta.url` or of a
+        /// `import.meta.ROLLDOWN_FILE_URL_*` reference
         const ImportMeta = 1 << 4;
+        /// Statement reads `import.meta.url`, directly or through a `ROLLDOWN_FILE_URL_*`
+        /// reference, which is rendered as a URL resolved against it
+        const ImportMetaUrl = 1 << 5;
     }
 }
 

@@ -1,8 +1,9 @@
 use itertools::Itertools;
 use rolldown_common::{
-  Chunk, ChunkIdx, ChunkKind, ChunkReasonType, ConcatenateWrappedModuleKind, ImportKind,
-  ImportRecordMeta, ModuleIdx, NormalModule, RuntimeHelper, StmtInfo, StmtInfoMeta,
-  SymbolOrMemberExprRef, WrapKind, side_effects::DeterminedSideEffects,
+  Chunk, ChunkFilenamesOutputOption, ChunkIdx, ChunkKind, ChunkReasonType,
+  ConcatenateWrappedModuleKind, ImportKind, ImportRecordMeta, ModuleIdx, NormalModule,
+  RuntimeHelper, StmtInfo, StmtInfoMeta, SymbolOrMemberExprRef, WrapKind,
+  side_effects::DeterminedSideEffects,
 };
 use rolldown_utils::indexmap::FxIndexSet;
 use rustc_hash::FxHashSet;
@@ -375,6 +376,9 @@ impl GenerateStage<'_> {
       if stmt_info.meta.contains(StmtInfoMeta::ImportMeta) {
         return Some("member uses import.meta");
       }
+      if stmt_info.meta.contains(StmtInfoMeta::ImportMetaUrl) && !self.import_meta_url_is_shared() {
+        return Some("member reads import.meta.url");
+      }
       if stmt_info.meta.contains(StmtInfoMeta::NonStaticDynamicImport) {
         return Some("member uses dynamic import");
       }
@@ -417,6 +421,26 @@ impl GenerateStage<'_> {
       return Some("member is an emitted asset");
     }
     None
+  }
+
+  /// `import.meta.url` inside a factory is the carrier's URL, so a URL resolved against it is the
+  /// same from every copy only when every chunk is written to one directory. String file name
+  /// patterns with the same literal directory guarantee that; a function or a placeholder in the
+  /// directory does not.
+  fn import_meta_url_is_shared(&self) -> bool {
+    fn directory(option: &ChunkFilenamesOutputOption) -> Option<&str> {
+      let ChunkFilenamesOutputOption::String(pattern) = option else {
+        return None;
+      };
+      let directory = pattern.rsplit_once('/').map_or("", |(directory, _)| directory);
+      (!directory.contains('[')).then_some(directory)
+    }
+    self.options.inline_common_chunks.as_ref().is_some_and(|options| options.allow_import_meta_url)
+      && match (directory(&self.options.chunk_filenames), directory(&self.options.entry_filenames))
+      {
+        (Some(chunk_directory), Some(entry_directory)) => chunk_directory == entry_directory,
+        _ => false,
+      }
   }
 
   /// A declaration, or an import whose wrapper call (`require_x()`, `init_x()`) produces the

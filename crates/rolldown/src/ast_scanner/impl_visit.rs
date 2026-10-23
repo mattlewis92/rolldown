@@ -332,14 +332,22 @@ impl<'me, 'ast: 'me> VisitJs<'ast> for AstScanner<'me, 'ast> {
   fn visit_member_expression(&mut self, it: &ast::MemberExpression<'ast>) {
     if it.object().is_import_meta()
       && let Some(property_name) = it.static_property_name().and_then(JSStr::as_str)
-      && let Some(file_url) = utils::file_url::strip_file_url_prefix(property_name)
     {
-      self.result.rolldown_file_url_references.push(RolldownFileUrlReference {
-        node_id: it.node_id(),
-        stmt_info_idx: self.current_stmt_idx,
-        reference_id: CompactStr::from(file_url.reference_id),
-        url_id: file_url.url_id.map(CompactStr::from),
-      });
+      if property_name == "url" {
+        self.current_stmt_info.meta.insert(StmtInfoMeta::ImportMetaUrl);
+        return;
+      }
+      if let Some(file_url) = utils::file_url::strip_file_url_prefix(property_name) {
+        self.result.rolldown_file_url_references.push(RolldownFileUrlReference {
+          node_id: it.node_id(),
+          stmt_info_idx: self.current_stmt_idx,
+          reference_id: CompactStr::from(file_url.reference_id),
+          url_id: file_url.url_id.map(CompactStr::from),
+        });
+        // Rendered as a URL resolved against `import.meta.url`, so it follows that read's rules.
+        self.current_stmt_info.meta.insert(StmtInfoMeta::ImportMetaUrl);
+        return;
+      }
     }
     walk_js::walk_member_expression(self, it);
   }

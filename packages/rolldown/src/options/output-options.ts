@@ -1085,14 +1085,26 @@ export type ExperimentalInlineCommonChunksOptions = {
    * `experimental.onDemandWrapping` must be off.
    *
    * With `output.strictExecutionOrder: false`, a common chunk is a candidate only when every one
-   * of its modules is wrapped (CommonJS or required ESM) or free of side effects (by analysis or
-   * by `sideEffects: false` in its `package.json`): an inlined chunk's code runs when its first
-   * reader starts, which can be after the reader's later imports, and only a module without side
-   * effects cannot tell. Chunks in a static import cycle with another chunk stay files.
+   * of its modules is wrapped (CommonJS or required ESM), free of side effects (by analysis or
+   * by `sideEffects: false` in its `package.json`), or has only effects that initialise bindings
+   * it declares or imports: an inlined chunk's code runs when its first reader starts, which can
+   * be after the reader's later imports, and a module whose statements run for their effect
+   * alone (an expression statement, a bare import, an export star) could tell. Chunks in a static
+   * import cycle with another chunk stay files.
    *
    * @default 0
    */
   maxSize?: number;
+  /**
+   * Also inline common chunks whose members read `import.meta.url`. Inside a factory it is the
+   * URL of the file that printed the copy, so a URL resolved against it is the same from every
+   * copy only when every chunk is written to one directory: the option is honoured when
+   * `chunkFileNames` and `entryFileNames` are strings whose directory part is the same literal,
+   * and such chunks stay files otherwise. Other uses of `import.meta` keep a chunk a file.
+   *
+   * @default false
+   */
+  allowImportMetaUrl?: boolean;
   /**
    * A matcher for module ids, or an array of them: a string (matched as a regular expression), a
    * RegExp, or a function, each applied like {@linkcode CodeSplittingGroup.test | test}. A common

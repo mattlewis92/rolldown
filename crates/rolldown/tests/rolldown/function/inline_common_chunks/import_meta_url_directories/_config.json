@@ -1,0 +1,23 @@
+{
+  "config": {
+    "input": [
+      {
+        "name": "a",
+        "import": "./a.js"
+      },
+      {
+        "name": "b",
+        "import": "./b.js"
+      }
+    ],
+    "preserveEntrySignatures": "false",
+    "chunkFilenames": "chunks/[name].js",
+    "codeSplitting": {
+      "experimentalInlineCommonChunks": {
+        "maxSize": 4096,
+        "allowImportMetaUrl": true
+      }
+    }
+  },
+  "hiddenRuntimeModule": false
+}

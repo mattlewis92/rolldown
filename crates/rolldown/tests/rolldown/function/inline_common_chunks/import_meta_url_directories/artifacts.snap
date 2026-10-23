@@ -1,0 +1,67 @@
+---
+source: crates/rolldown_testing/src/integration_test.rs
+---
+# Assets
+
+## a.js
+
+```js
+import { t as __esmMin } from "./chunks/rolldown-runtime.js";
+import { n as init_shared, t as directory } from "./chunks/shared.js";
+// a.js
+function init_a() {
+	return (init_a = __esmMin((() => {
+		init_shared();
+		globalThis.directories.push(directory);
+	})))();
+}
+init_a();
+
+```
+
+## b.js
+
+```js
+import { t as __esmMin } from "./chunks/rolldown-runtime.js";
+import { n as init_shared, t as directory } from "./chunks/shared.js";
+// b.js
+function init_b() {
+	return (init_b = __esmMin((() => {
+		init_shared();
+		globalThis.directories.push(directory);
+	})))();
+}
+init_b();
+
+```
+
+## chunks/rolldown-runtime.js
+
+```js
+// \0rolldown/runtime.js
+var __esmMin = (fn, res, err) => () => {
+	if (err) throw err[0];
+	try {
+		return fn && (res = fn(fn = 0)), res;
+	} catch (e) {
+		throw err = [e], e;
+	}
+};
+export { __esmMin as t };
+
+```
+
+## chunks/shared.js
+
+```js
+import { t as __esmMin } from "./rolldown-runtime.js";
+// shared.js
+var directory;
+function init_shared() {
+	return (init_shared = __esmMin((() => {
+		directory = import.meta.url.slice(0, import.meta.url.lastIndexOf("/") + 1);
+	})))();
+}
+export { init_shared as n, directory as t };
+
+```

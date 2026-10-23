@@ -385,6 +385,7 @@ function bindingifyCodeSplitting(
           ? undefined
           : {
               maxSize: experimentalInlineCommonChunks.maxSize,
+              allowImportMetaUrl: experimentalInlineCommonChunks.allowImportMetaUrl,
               exclude:
                 experimentalInlineCommonChunks.exclude == null
                   ? undefined

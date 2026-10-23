@@ -78,7 +78,11 @@ async fn render_chunk_origin_resolves_logical_members() {
         strict_execution_order: Some(true),
         code_splitting: Some(CodeSplittingMode::Advanced(ManualCodeSplittingOptions {
           experimental_inline_common_chunks: inline
-            .then_some(InlineCommonChunksOptions { max_size: Some(f64::INFINITY), exclude: None }),
+            .then_some(InlineCommonChunksOptions {
+              max_size: Some(f64::INFINITY),
+              allow_import_meta_url: None,
+              exclude: None,
+            }),
           ..Default::default()
         })),
         ..Default::default()
