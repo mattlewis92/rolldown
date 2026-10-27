@@ -11,7 +11,7 @@
 5. **Dev server returns JS directly** - `/@vite/lazy` returns the compiled code as a single JS string; the browser loads it as an ES module (only inline sourcemaps survive — see implementation.md)
 6. **Module IDs** - runtime module-map lookups use **stable IDs** (cwd-relative); absolute paths appear only in the proxy id that `requestLazy` passes to `loadLazyChunk` (sent as the `/@vite/lazy?id=` param) and the fetched template's `import($MODULE_ID)`
 7. **Proxy module states** - a proxy is a server-side graph node, never fetched as a chunk. Two states: **not fetched** (empty body, keeps the real module out of the build) and **fetched** (imports the real module, rooting the partial scan)
-8. **Build output refresh** - after lazy compilation, the dev engine triggers a background rebuild to update build output; the rebuild is silent to connected clients
+8. **No build output refresh** - a lazy compile queues no rebuild: pages load routes through `requestLazy`, never from the build output, and the next build links the route from the scan cache
 9. **Dedup** - the server skips modules whose current copy the client already holds (its ship map + boot-evaluated map, `HmrStage::compile_lazy_entry`); in the browser `initModule` runs a factory only when the module is not yet in the module cache — a shared module never executes twice
 10. **Error handling** - unknown module ids are rejected (security gate, #9969); init errors in lazy modules reject the consumer's `await import()` catchably (#9981)
 11. **ClientId** - browser-generated id per tab (Vite's `bundledDevClient.ts`); selects the per-client `ClientSession` (`crates/rolldown_dev/src/types/client_session.rs`) whose ship map and boot-evaluated map size the lazy chunk

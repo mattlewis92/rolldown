@@ -437,23 +437,22 @@ impl DevEngine {
         }
       }
 
-      // The compile merged the route into the graph, so the build output no longer matches
-      // the graph, and a rebuild brings it in line. Pages never load the route from the build
-      // output: every lazy `import()` calls `requestLazy`.
+      // No rebuild: pages never load the route from the build output (every lazy `import()`
+      // calls `requestLazy`), and the next build links the route from the scan cache. A
+      // rebuild here would hold the bundler lock while the page waits on its next lazy route.
       // The compile added the files it loaded to the watch list of the latest build.
       // A new build can start before the coordinator reads this message, and its list
       // starts empty, so send this list with the message.
       // See internal-docs/dev-engine/implementation.md §15.
-      self.notify_module_changed(proxy_module_id, Arc::clone(bundler.watch_files()));
+      self.notify_lazy_compiled(Arc::clone(bundler.watch_files()));
     }
 
     result
   }
 
-  /// Notify the coordinator that a module has changed programmatically.
-  /// This triggers a rebuild to update the build output.
-  fn notify_module_changed(&self, module_id: String, watch_files: Arc<FxDashSet<ArcStr>>) {
-    let _ = self.coordinator_sender.send(CoordinatorMsg::ModuleChanged { module_id, watch_files });
+  /// Hand the coordinator the watch list a lazy compile added its files to.
+  fn notify_lazy_compiled(&self, watch_files: Arc<FxDashSet<ArcStr>>) {
+    let _ = self.coordinator_sender.send(CoordinatorMsg::LazyCompiled { watch_files });
   }
 
   pub async fn close(&self) -> BuildResult<()> {
@@ -605,7 +604,7 @@ mod tests {
 
   /// A lazy compile adds the files it loads to the watch list of the build it runs
   /// against. A build that starts before the coordinator handles the compile's
-  /// `ModuleChanged` begins with an empty list, and no later build loads those cached
+  /// `LazyCompiled` begins with an empty list, and no later build loads those cached
   /// modules again, so the coordinator must still end up watching them.
   #[cfg(feature = "testing")]
   #[tokio::test]
@@ -654,7 +653,7 @@ mod tests {
       .compile_lazy_entry(format!("{lazy}?rolldown-lazy=1"), "client".to_string())
       .await
       .unwrap();
-    // The compile has sent `ModuleChanged`. On this single-threaded runtime the coordinator
+    // The compile has sent `LazyCompiled`. On this single-threaded runtime the coordinator
     // has not run since, so it reads the message only after this build replaced the list.
     engine.bundler.lock().await.incremental_generate(ScanMode::Partial(vec![])).await.unwrap();
     engine.ensure_latest_bundle_output().await.unwrap();
@@ -663,6 +662,85 @@ mod tests {
     engine.close().await.unwrap();
     std::fs::remove_dir_all(&dir).unwrap();
     assert!(watched.contains(&lazy) && watched.contains(&dep), "{watched:#?}");
+  }
+
+  /// A rebuild after each lazy compile held the bundler lock while the page waited on its
+  /// next lazy route. Pages load routes through `requestLazy`, so the output stays current,
+  /// and the next build still links the compiled route from the scan cache.
+  #[cfg(feature = "testing")]
+  #[tokio::test]
+  async fn lazy_compile_queues_no_rebuild_and_the_next_build_links_its_route() {
+    use std::sync::{Arc, Mutex};
+
+    use rolldown::{DevModeOptions, ExperimentalOptions};
+    use rolldown_common::ScanMode;
+    use rolldown_error::BuildResult;
+
+    let bundles_lazy = |output: &crate::BundleOutput| {
+      output
+        .assets
+        .iter()
+        .any(|asset| String::from_utf8_lossy(asset.content_as_bytes()).contains("lazy-marker"))
+    };
+    let dir =
+      std::env::temp_dir().join(format!("rolldown-dev-lazy-no-rebuild-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    // The resolver returns real paths, and the temp dir can sit behind a symlink.
+    let dir = dunce::canonicalize(&dir).unwrap();
+    std::fs::write(dir.join("main.js"), "import('./lazy.js');\n").unwrap();
+    std::fs::write(dir.join("lazy.js"), "export const marker = 'lazy-marker';\n").unwrap();
+    let lazy = dir.join("lazy.js").to_string_lossy().into_owned();
+
+    let outputs: Arc<Mutex<Vec<bool>>> = Arc::default();
+    let on_output = {
+      let outputs = Arc::clone(&outputs);
+      Arc::new(move |output: BuildResult<crate::BundleOutput>| {
+        outputs.lock().unwrap().push(bundles_lazy(&output.unwrap()));
+      })
+    };
+    let engine = super::DevEngine::new(
+      BundlerConfig::new(
+        BundlerOptions {
+          input: Some(vec!["./main.js".to_string().into()]),
+          cwd: Some(dir.clone()),
+          experimental: Some(ExperimentalOptions {
+            dev_mode: Some(DevModeOptions { lazy: Some(true), ..Default::default() }),
+            ..Default::default()
+          }),
+          ..Default::default()
+        },
+        vec![],
+      ),
+      crate::DevOptions {
+        on_output: Some(on_output),
+        watch: Some(crate::DevWatchOptions {
+          disable_watcher: Some(true),
+          skip_write: Some(true),
+          ..Default::default()
+        }),
+        ..Default::default()
+      },
+    )
+    .unwrap();
+    engine.run().await.unwrap();
+    engine.ensure_latest_bundle_output().await.unwrap();
+    assert_eq!(*outputs.lock().unwrap(), [false], "the initial build stubs the lazy module");
+
+    engine
+      .compile_lazy_entry(format!("{lazy}?rolldown-lazy=1"), "client".to_string())
+      .await
+      .unwrap();
+    let state = engine.get_bundle_state().await.unwrap();
+    engine.ensure_latest_bundle_output().await.unwrap();
+    let next_build =
+      engine.bundler.lock().await.incremental_generate(ScanMode::Partial(vec![])).await.unwrap();
+
+    let outputs = outputs.lock().unwrap().clone();
+    engine.close().await.unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(!state.has_stale_output);
+    assert_eq!(outputs, [false], "the compile queued no rebuild");
+    assert!(bundles_lazy(&next_build), "the next build links the compiled route");
   }
 
   /// With `RebuildStrategy::Always` one task runs the HMR stage and then a rebuild. The HMR

@@ -8,19 +8,16 @@ describe('lazy-shared-module', () => {
   // (`loadExports`), not from the raw chunk namespace — otherwise `sel.foo`
   // is undefined because the chunk renamed `foo` to something like `$`.
   test('preserves original export names for shared lazy module (#9132)', { retry: 0 }, async () => {
-    // First load: the lazy fetches mark each proxy as fetched, and the
-    // server rebuilds main.js around the fetched proxies. No assertions here
-    // — the bug only shows on the rebuilt output.
+    // First load: the lazy fetches mark each proxy as fetched. No assertions
+    // here — the bug only shows once the proxies are fetched.
     await page.goto(serverUrl, { waitUntil: 'domcontentloaded' });
     await waitForBuildStable();
     await page.click('#shared-module-btn');
     await expect.poll(() => page.textContent('#shared-module-status')).toBe('done');
 
-    // Wait for those rebuilds to settle.
     await waitForBuildStable();
 
-    // Second load: main.js now uses the fetched proxies — the path PR #9132
-    // fixes. Before the fix, `sel.foo` was undefined here.
+    // Second load: against the fetched proxies — the path PR #9132 fixes. Before the fix, `sel.foo` was undefined here.
     await page.reload({ waitUntil: 'domcontentloaded' });
     await page.click('#shared-module-btn');
     await expect.poll(() => page.textContent('#shared-module-status')).toBe('done');

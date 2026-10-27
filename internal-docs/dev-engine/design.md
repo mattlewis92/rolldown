@@ -58,17 +58,11 @@ it takes the same path.
 ### 3. New input is the only recovery trigger
 
 After a failed build, the engine waits for new input before rebuilding.
-Inside rolldown_dev, two things count:
+Inside rolldown_dev, only a file change counts. Both Vite config edits
+and user-land source edits are valid triggers.
 
-- **A file change.** Both Vite config edits and user-land source edits
-  are valid triggers.
-- **A tab opening a lazy route.** Its lazy compile changes the proxy
-  module's content, and the background `Rebuild` it queues
-  (`ModuleChanged`) runs in failed states too. While a lost HMR update is
-  pending, that rebuild also reloads every tab (see
-  [Lost HMR updates](#lost-hmr-updates)).
-
-Nothing else counts as recovery — not page refresh, not elapsed time,
+Nothing else counts as recovery — not opening a lazy route (a lazy
+compile queues no task; see §15), not page refresh, not elapsed time,
 not manual UI dismissal: `ensure_latest_bundle_output` no-ops in every
 failed state (§13b), so access never rebuilds on its own.
 
@@ -84,9 +78,8 @@ from `BundleState` (§12). A `Rebuild`-stage or full-build failure gets
 no such exception — only new input recovers those. (Wired up in Vite:
 `triggerBundleRegenerationIfStale` in `bundledDev.ts`.)
 
-Realized in: `handle_file_changes` (§7) and the `ModuleChanged` handler
-(`bundle_coordinator.rs:138`) are the only producers of post-failure
-rebuild tasks. `triggerFullBuild` (§13e) is an explicit escape hatch
+Realized in: `handle_file_changes` (§7) is the only producer of
+post-failure rebuild tasks. `triggerFullBuild` (§13e) is an explicit escape hatch
 for cases the watcher cannot observe (e.g. missing-import resolution;
 see Unresolved Questions).
 
@@ -134,8 +127,7 @@ flowchart LR
   cache half updated. A full scan builds it again from scratch.
 - **Principles 1 and 3 hold.** The upgrade never repeats by itself: a
   failed full build keeps the flag until the next trigger. No trigger is
-  added, but a lazy route opened in one tab now reloads every tab. This
-  is accepted, because tabs reload only after a successful build.
+  added.
 
 ## Unresolved Questions
 
@@ -165,7 +157,7 @@ flowchart LR
 - [watch-mode](../watch-mode/implementation.md) — `rolldown_watcher`, the actor-based
   watch architecture; `rolldown_dev` reuses the same actor pattern
 - [lazy-compilation](../lazy-compilation/implementation.md) — lazy entry compilation,
-  reached via `DevEngine::compile_lazy_entry` and the `ModuleChanged`
+  reached via `DevEngine::compile_lazy_entry` and the `LazyCompiled`
   message
 - [dev-server-test-harness](../dev-server-test-harness/implementation.md) — browser
   test harness for the dev server

@@ -59,16 +59,13 @@ Per-client outcomes when a fetched lazy module is later edited (see "Editing a f
 - Every connected client gets a push with `changedIds`; the patch carries only the modules that client lacks or holds at an older stamp (`render_hmr_patch` in `hmr_stage.rs`). The browser walk then decides the outcome: a hot update, a client no-op (no changed id executed, so the patch is never fetched), or a reload request
 - `HmrUpdate::Noop` is produced when the changed set is empty and the patch would carry nothing (`render_hmr_patch`), e.g. an unfetched lazy file that maps to no graph module
 
-### Build Output Refresh
+### After a Lazy Compile
 
-After successful lazy compilation:
+After successful lazy compilation, `DevEngine` sends the coordinator `LazyCompiled`, carrying the watch list the compile wrote to. The coordinator registers that list and does nothing else:
 
-1. `DevEngine` notifies the coordinator via `ModuleChanged` (carrying the **raw proxy id**, `?rolldown-lazy=1` included, and the watch list the compile wrote to)
-2. Coordinator first registers that watch list — it holds the files the compile loaded. The latest build's list can miss them, because a build that starts before the coordinator handles the message begins with an empty list (see [dev-engine §15](../dev-engine/implementation.md)); this step is what makes later edits to the lazy module trigger rebuilds at all
-3. Coordinator queues a `Rebuild` task with the proxy id as the changed file and marks output as stale
-4. The rebuild swaps the stub for the fetched template in the build output, so the output matches the graph again. No page loads the route from it: every lazy `import()` calls `requestLazy`
-
-The raw proxy id is deliberately **not** normalized: during the partial rebuild it resolves back to itself (the resolver preserves the query), string-matches the proxy module's key in the incremental cache, and forces the proxy's `load` hook to re-run — which now returns the fetched template. Normalizing to the real module id would invalidate the wrong module and leave the cached stub proxy in place.
+- The list holds the files the compile loaded. The latest build's list can miss them, because a build that starts before the coordinator handles the message begins with an empty list (see [dev-engine §15](../dev-engine/implementation.md)); this step is what makes later edits to the lazy module trigger updates at all
+- No rebuild is queued and the output is not marked stale. No page loads the route from the build output: every lazy `import()` calls `requestLazy`. The compile's partial scan re-ran the proxy's `load` hook (now the fetched template) and merged the route into the scan cache, so the next build of any kind links it without listing the proxy as changed
+- A rebuild per compile used to hold the bundler lock while the page waited on its next lazy route, so each navigation in a large app waited out the previous route's link and generate
 
 A successful background rebuild is **silent** to connected clients: output is swapped in place and no websocket message is sent (the running page keeps the code it got from `/lazy`). A reload fires only if a `FullReload` was already pending or the server is recovering from a previously-broadcast build error. One exception: while a lost HMR update is pending, this `Rebuild` becomes a full build and sends `FullReload` to every client, with the proxy id in `changedFiles` (see [dev-engine §9b](../dev-engine/implementation.md)). `Rebuild` tasks never generate HMR updates and merge only with other `Rebuild`s, so the `?rolldown-lazy=1` pseudo-path can never leak into HMR-update computation — though plugins do observe it once through the `watch_change` hook.
 
@@ -209,7 +206,7 @@ Lazy compiles (like HMR patches) never run the generate stage, so assets emitted
 
 Design constraint for consumers: asset URLs must be resolved **eagerly at `load`** (`emitFile` + `getFileName`, as the dev server's Vite-style asset plugin does) — a `renderChunk`-time placeholder scheme would leak, because the lazy render path never runs `renderChunk`.
 
-### Build Output Refresh
+### Watch List Hand-off
 
 After successful lazy compilation, the dev engine's success branch does two things, in order:
 
@@ -218,26 +215,21 @@ After successful lazy compilation, the dev engine's success branch does two thin
 if result.is_ok() {
   // 1. deliver assets emitted during the compile (before the code returns)
   if let Some(on_additional_assets) = ... { ... }
-  // 2. queue the background rebuild, with the watch list the compile wrote to
-  self.notify_module_changed(proxy_module_id, Arc::clone(bundler.watch_files()));
+  // 2. hand the coordinator the watch list the compile wrote to
+  self.notify_lazy_compiled(Arc::clone(bundler.watch_files()));
 }
 ```
 
-The coordinator handles `ModuleChanged`:
+The coordinator handles `LazyCompiled` by registering the watch list the message carries (see "Data Lifecycle → After a Lazy Compile" for why). It queues no task and leaves `has_stale_bundle_output` alone.
 
-1. Register the watch list the message carries (see "Data Lifecycle → Build Output Refresh" for why)
-2. Queue a `TaskInput::Rebuild` with the raw proxy id as the changed file
-3. Set `has_stale_bundle_output = true`
-4. Schedule build if stale (runs immediately only when the coordinator is Idle/Failed; otherwise waits in the queue)
-
-On **failure**, neither step runs: a failed lazy compile queues no rebuild and the stub template stays in the build output (but the proxy remains marked fetched). If the background rebuild itself fails, the consumer caches the error, broadcasts an error overlay to every client, and cancels any pending full reload so the page never reloads onto a broken bundle (#9903); the coordinator enters `Failed { Rebuild }` with stale output, recovered by the next file change or page access.
+On **failure**, neither step runs (but the proxy remains marked fetched).
 
 ### Error Handling
 
 The error contract (no longer "POC — Err or panic is fine"):
 
 - **Unknown module id** → `Err("Lazy entry module not found in cache. module_id=...")` in `HmrStage::compile_lazy_entry`; the napi binding surfaces it as a rejected promise prefixed `Failed to compile lazy entry: ...`; the dev-server middleware answers HTTP 500 (missing `id`/`clientId` params fall through to `next()`; success sets `Content-Type: application/javascript`)
-- **Init errors are catchable (#9981)**: the lazy chunk only registers factories; `requestLazy` runs `initModule` itself once the chunk has evaluated, inside the promise it hands back to the consumer. An error thrown while the lazy module initializes therefore rejects that promise, hence the consumer's `await import(...)` — try/catch works, and without a handler exactly one `unhandledrejection` fires. The rejection is memoized like a native `import()` of a throwing module; a retry could not work, since a factory registers its module before running its body. Pinned on both the **cold** path (first `/lazy` compile) and the **warm** path (fetched proxy after rebuild + reload) by the lazy-init-error specs (#9975 added the original failing spec; #9981 rewrote and split it)
+- **Init errors are catchable (#9981)**: the lazy chunk only registers factories; `requestLazy` runs `initModule` itself once the chunk has evaluated, inside the promise it hands back to the consumer. An error thrown while the lazy module initializes therefore rejects that promise, hence the consumer's `await import(...)` — try/catch works, and without a handler exactly one `unhandledrejection` fires. The rejection is memoized like a native `import()` of a throwing module; a retry could not work, since a factory registers its module before running its body. Pinned on both the **cold** path (first `/lazy` compile) and the **warm** path (already-fetched proxy after a reload) by the lazy-init-error specs (#9975 added the original failing spec; #9981 rewrote and split it)
 - **Runtime `loadExports` miss** does not throw — it warns and returns `{}`
 - The one remaining panic: calling `compile_lazy_entry` before any bundle has been built
 
@@ -330,12 +322,12 @@ After `/lazy`, the real module and its sync deps are ordinary watched graph modu
 └─────────────────────────────────────────────────────────────────────────┘
                                     ↓
 ┌─────────────────────────────────────────────────────────────────────────┐
-│ 7. BUILD OUTPUT REFRESH (Background)                                    │
+│ 7. WATCH LIST HAND-OFF                                                  │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  - DevEngine sends CoordinatorMsg::ModuleChanged { proxyModuleId }      │
-│  - Coordinator: watch compile's files → queue Rebuild → mark stale      │
-│  - Rebuild updates build output with fetched template                   │
-│  - Silent to connected clients; a reload still loads the route via /lazy│
+│  - DevEngine sends CoordinatorMsg::LazyCompiled { watch_files }         │
+│  - Coordinator watches the compile's files; no rebuild, output not stale│
+│  - A reload loads the route via /lazy again; the next build links it    │
+│    from the scan cache                                                  │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -393,21 +385,11 @@ if let Some(importer) = args.importer {
 
 This allows the fetched template's dynamic import to resolve to the actual module.
 
-### Issue 4: Build Output Must Update After Lazy Compilation
+### Issue 4: A Rebuild Per Lazy Compile Blocked the Next Route
 
-**Problem**: After the first lazy load, the build output on disk still had the stub template, so the output no longer matched the graph that later builds and HMR steps start from.
+**Problem**: Each successful lazy compile queued a `Rebuild` with the proxy id as the changed file, so the build output would carry the fetched template. The rebuild links and generates the whole graph while holding the bundler lock, and the next `/@vite/lazy` request needs that lock. In a large app every navigation queued one, so each route waited out the rebuild the previous route queued.
 
-**Solution**: Notify the coordinator to trigger a rebuild after a successful lazy compile:
-
-```rust
-// In DevEngine::compile_lazy_entry
-if let Ok(output) = &mut result {
-  // (assets delivered via on_additional_assets first — see "Emitted Assets")
-  self.notify_module_changed(proxy_module_id, watch_files);
-}
-```
-
-The notification deliberately carries the raw proxy id (`?rolldown-lazy=1` included) — it is the correct incremental-cache invalidation key, since the module whose content changed is the _proxy_ (stub → fetched template), not the real module. See "Build Output Refresh".
+**Solution**: Queue nothing. Since `requestLazy`, no page loads a route from the build output, and the compile's partial scan already put the fetched proxy in the scan cache, so the next build includes the route anyway. The compile only hands the coordinator its watch list. See "After a Lazy Compile".
 
 ### Issue 5: Non-Identifier Export Names Need Computed Property Syntax
 
@@ -534,9 +516,9 @@ For future debugging, these files handle lazy compilation:
 
 ### Dev Engine
 
-6. **`crates/rolldown_dev/src/dev_engine.rs`** - `compile_lazy_entry()` (ship-map + boot-evaluated snapshot, mark-as-fetched, pending-payload insert, asset delivery, `notify_module_changed()`), client sessions (`register_client`, `remove_client`, `notify_payload_delivered`; types in `types/client_session.rs` and `types/pending_payload.rs`)
-7. **`crates/rolldown_dev/src/types/coordinator_msg.rs`** - `ModuleChanged` message variant
-8. **`crates/rolldown_dev/src/bundle_coordinator.rs`** - Handles `ModuleChanged` (watch the compile's files + rebuild), state machine
+6. **`crates/rolldown_dev/src/dev_engine.rs`** - `compile_lazy_entry()` (ship-map + boot-evaluated snapshot, mark-as-fetched, pending-payload insert, asset delivery, `notify_lazy_compiled()`), client sessions (`register_client`, `remove_client`, `notify_payload_delivered`; types in `types/client_session.rs` and `types/pending_payload.rs`)
+7. **`crates/rolldown_dev/src/types/coordinator_msg.rs`** - `LazyCompiled` message variant
+8. **`crates/rolldown_dev/src/bundle_coordinator.rs`** - Handles `LazyCompiled` (watch the compile's files), state machine
 9. **`crates/rolldown_binding/src/binding_dev_engine.rs`** - napi surface (`compile_entry`, `register_client`, `notify_payload_delivered`, `remove_client`)
 
 ### HMR/Build

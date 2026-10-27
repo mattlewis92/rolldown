@@ -38,9 +38,10 @@ pub enum CoordinatorMsg {
   GetWatchedFiles {
     reply: GetWatchedFilesSender,
   },
-  /// Notify that a module has changed programmatically (e.g., lazy compilation executed)
-  ModuleChanged {
-    module_id: String,
+  /// A lazy compile merged a route into the module graph. It needs no rebuild: pages load
+  /// lazy routes through `requestLazy`, never from the build output, and the next build
+  /// links the route from the scan cache anyway.
+  LazyCompiled {
     /// The watch list of the build the lazy compile ran against. It holds the files
     /// the compile loaded. See `DevEngine::compile_lazy_entry`.
     watch_files: Arc<FxDashSet<ArcStr>>,

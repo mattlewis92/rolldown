@@ -7,7 +7,7 @@ import { page, serverUrl, waitForBuildStable } from '~utils';
 // The two loads exercise two different proxy code paths against the SAME dev
 // engine (only the browser page reloads):
 //   1. cold  — first compile, served through the on-demand `@vite/lazy` response
-//   2. warm  — after the engine rebuilds main.js around the now-"fetched" proxy
+//   2. warm  — after a reload, against the proxy the first load already fetched
 //
 // Either way the result is identical: caught at `await import(...)`, with no
 // unhandled rejection. Regression test for vitejs/vite#21626 / rolldown#9975.
@@ -37,8 +37,7 @@ describe('lazy-compilation: lazy-init-error (try/catch)', () => {
     // 1. Cold: first compile.
     await clickAndExpectCaught();
 
-    // Let the rebuild triggered by the lazy compile settle, then refresh the
-    // page WITHOUT restarting the dev engine — main.js now uses the fetched proxy.
+    // Refresh the page WITHOUT restarting the dev engine — the proxy is now fetched.
     await waitForBuildStable();
     await page.reload({ waitUntil: 'domcontentloaded' });
 

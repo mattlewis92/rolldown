@@ -196,8 +196,7 @@ pub enum CoordinatorMsg {
   EnsureLatestBundleOutput { reply: … },     // "I need a fresh full bundle"
   TriggerFullBuild,                           // unconditional full build (fire-and-forget)
   GetWatchedFiles { reply: … },              // list of watched paths
-  ModuleChanged {                            // programmatic module change
-    module_id: String,
+  LazyCompiled {                             // a lazy compile merged a route
     watch_files: Arc<FxDashSet<ArcStr>>,     // the lazy compile's watch list; see §15
   },
   Close,                                     // shut the coordinator down
@@ -215,7 +214,7 @@ Routing happens in `BundleCoordinator::run` (`bundle_coordinator.rs:98-150`):
 | `EnsureLatestBundleOutput` | `ensure_latest_bundle_output`, reply         |
 | `TriggerFullBuild`         | `trigger_full_build` (no reply)              |
 | `GetWatchedFiles`          | reply with the watched paths of the watcher  |
-| `ModuleChanged`            | watch its files, queue a `Rebuild`, schedule |
+| `LazyCompiled`             | watch its files (no task)                    |
 | `Close`                    | await running task, then `break` the loop    |
 
 The producers:
@@ -226,7 +225,7 @@ The producers:
 - A finishing **`BundlingTask`** sends `BundleCompleted` from its
   `run()` (`bundling_task.rs:73-78`).
 - The **`DevEngine`** sends `ScheduleBuildIfStale`, `GetState`,
-  `EnsureLatestBundleOutput`, `GetWatchedFiles`, `ModuleChanged`,
+  `EnsureLatestBundleOutput`, `GetWatchedFiles`, `LazyCompiled`,
   `Close` on behalf of its public API callers (the dev server, HTTP
   middleware, lazy-compilation endpoint, etc.).
 
@@ -272,8 +271,7 @@ two halves joined by `Idle`:
 Edges are grouped by what drives them: **scheduling** (a queued task
 starts), **completion** (`BundleCompleted`), **file-change recovery**, and
 the **rebuild triggers** that enqueue work without a file change
-(access-driven `EnsureLatestBundleOutput`, programmatic `ModuleChanged`,
-manual `TriggerFullBuild`). Every rebuild trigger enqueues a task and then
+(access-driven `EnsureLatestBundleOutput`, manual `TriggerFullBuild`). Every rebuild trigger enqueues a task and then
 calls `schedule_build_if_stale`, which is the actual state-mutation site
 (§8) — so while a build is already running, a trigger only appends to the
 queue and the transition happens when the current task completes and the
@@ -302,7 +300,6 @@ stateDiagram-v2
 
     %% rebuild triggers (no file change)
     Idle --> InProgress : EnsureLatestBundleOutput when stale<br/>queue empty Rebuild
-    Idle --> InProgress : ModuleChanged<br/>queue Rebuild
     Idle --> FullBuildInProgress : TriggerFullBuild<br/>clear queue + FullBuild
     Failed --> FullBuildInProgress : TriggerFullBuild
     FullBuildFailed --> FullBuildInProgress : TriggerFullBuild
@@ -334,7 +331,6 @@ of them.
 | File change, steady state (`Idle` / `InProgress` / `Failed`) | `Hmr` or `HmrRebuild`          | `InProgress`          | `handle_file_changes`, `:202`                       |
 | File change, `FullBuildFailed`                               | `FullBuild` (clears the stash) | `FullBuildInProgress` | `handle_file_changes`, `:248`                       |
 | Browser access while stale (`EnsureLatestBundleOutput`)      | empty-files `Rebuild`          | `InProgress`          | `ensure_latest_bundle_output`, `:401` (push `:419`) |
-| Programmatic module change (`ModuleChanged`)                 | `Rebuild`                      | `InProgress`          | run loop, `:138-155`                                |
 | Manual full build (`TriggerFullBuild`)                       | clears queue, `FullBuild`      | `FullBuildInProgress` | `trigger_full_build`, `:457`                        |
 
 ---
@@ -584,13 +580,12 @@ started it:
 | Trigger                                                                   | Task                   |
 | ------------------------------------------------------------------------- | ---------------------- |
 | A file change                                                             | `Hmr` / `HmrRebuild`   |
-| A tab opens a lazy route (`ModuleChanged`, `bundle_coordinator.rs:138`)   | `Rebuild { proxy id }` |
 | Vite page access while `Failed{Hmr}` (`triggerBundleRegenerationIfStale`) | `FullBuild`            |
 | Manual retry (`trigger_full_build`, `bundle_coordinator.rs:427`)          | `FullBuild`            |
 
-So a lazy route opened in one tab reloads every tab. This is intended.
 The tabs reload only after the full build succeeds, and that output has
-the lost edit, so every tab lands on correct code.
+the lost edit, so every tab lands on correct code. Opening a lazy route
+starts no task (§15), so it does not upgrade one.
 
 The upgrade never repeats by itself. Each full build needs one of the
 triggers above:
@@ -971,7 +966,7 @@ watcher batch. It runs before `schedule_build_if_stale`, and no other
 task can start while the state is `InProgress`, so the list a task wrote
 to is registered before the next task's build can replace it. A lazy
 compile writes to the list outside any task, so it carries its list in
-`ModuleChanged` instead (§15).
+`LazyCompiled` instead (§15).
 
 Key facts:
 
@@ -998,7 +993,6 @@ output on disk / in memory may not reflect the latest source."
 | Successful task that rebuilt (`Rebuild`/`HmrRebuild`) | `false`                           |
 | Successful `Hmr`-only task (no rebuild)               | `true`                            |
 | Failed incremental task                               | `true`                            |
-| `ModuleChanged` received                              | `true`                            |
 
 It is consumed by `ensure_latest_bundle_output` (§13) to decide whether
 a lazy rebuild is needed before serving the full bundle. It is also
@@ -1292,13 +1286,22 @@ Beyond `ensure_latest_bundle_output`, the public methods on `DevEngine`
 | `register_client(client_id)`                     | hello: new `ClientSession`, empty ship map, boot-evaluated map frozen in (`dev_engine.rs:306`) |
 | `remove_client(client_id)`                       | disconnect: drops the session and its pending payloads (`dev_engine.rs:318`)                   |
 | `notify_payload_delivered(filename)`             | delivery ack: max-merges the pending payload's stamps into `shipped[C]` (`dev_engine.rs:332`)  |
-| `compile_lazy_entry(proxy_module_id, client_id)` | compiles a lazy entry, records it as a pending payload, then sends `ModuleChanged`             |
+| `compile_lazy_entry(proxy_module_id, client_id)` | compiles a lazy entry, records it as a pending payload, then sends `LazyCompiled`              |
 | `close()`                                        | sends `Close`, runs `closeBundle`, awaits coordinator shutdown                                 |
 | `is_closed()` / `bundler_options()`              | accessors                                                                                      |
 
-`ModuleChanged` handling (`bundle_coordinator.rs:148-165`): registers the
-watch files the message carries, queues a `TaskInput::Rebuild` for the
-changed module, sets `has_stale_bundle_output = true`, schedules.
+`LazyCompiled` handling (`bundle_coordinator.rs:148`): registers the
+watch files the message carries, and nothing else. A lazy compile queues
+no task and leaves `has_stale_bundle_output` alone:
+
+- Pages never load a lazy route from the build output. Every lazy
+  `import()` calls `requestLazy`, which runs the module from its factory
+  or fetches it from `/@vite/lazy`.
+- The compile's partial scan merged the route into the scan cache, so
+  the next build of any kind links it without listing it as changed.
+- A rebuild per compile held the bundler lock while the page waited on
+  its next lazy route: in a large app each navigation queued one, and
+  the next `/@vite/lazy` request waited out the whole link and generate.
 
 Why the message carries the watch files: each build starts with a new,
 empty watch list (`PluginDriverFactory::create_plugin_driver`), and
@@ -1310,9 +1313,9 @@ compile and the moment the coordinator handles the message:
 ```
 compile_lazy_entry              rebuild task             coordinator
 loads lazy.js into list A
-sends ModuleChanged
+sends LazyCompiled
                                 new build, list B (empty)
-                                                         handles ModuleChanged
+                                                         handles LazyCompiled
 ```
 
 Reading the latest list there reads list B. Cached modules are not
@@ -1653,7 +1656,7 @@ flowchart TD
   T1([initial load]) --> FULL["TaskInput: FullBuild"]
   T2([file edit]) --> D{"rebuild_strategy?"}
   T3([dynamic import]) --> LAZY["compileEntry (DevEngine)"]
-  T4([stale page load / ModuleChanged]) --> REB["TaskInput: Rebuild"]
+  T4([stale page load]) --> REB["TaskInput: Rebuild"]
 
   %% ===== dispatch (handle_file_changes) =====
   D -->|"Never (default)"| HMR["TaskInput: Hmr"]
@@ -1765,7 +1768,7 @@ inside a `generateBundle` hook (that hook does not run for patches). It is a
 - [watch-mode](../watch-mode/implementation.md) — `rolldown_watcher`, the actor-based
   watch architecture; `rolldown_dev` reuses the same actor pattern
 - [lazy-compilation](../lazy-compilation/implementation.md) — lazy entry compilation,
-  reached via `DevEngine::compile_lazy_entry` and the `ModuleChanged`
+  reached via `DevEngine::compile_lazy_entry` and the `LazyCompiled`
   message
 - [dev-server-test-harness](../dev-server-test-harness/implementation.md) — browser
   test harness for the dev server
