@@ -2,42 +2,65 @@ import type { BindingRenderedChunk } from '../binding.cjs';
 import type { RenderedChunk } from '../types/rolldown-output';
 import { transformToRenderedModule } from './transform-rendered-module';
 
+/**
+ * Every read of a binding field crosses into Rust and copies the value out, and a `renderChunk`
+ * hook that walks the chunk graph through `meta.chunks` reads the same chunks' fields once per
+ * chunk it renders, so each field is read once.
+ */
+function lazy<T>(read: () => T): () => T {
+  let value: T;
+  let pending = true;
+  return () => {
+    if (pending) {
+      value = read();
+      pending = false;
+    }
+    return value;
+  };
+}
+
 export function transformRenderedChunk(chunk: BindingRenderedChunk): RenderedChunk {
-  let modules: null | RenderedChunk['modules'] = null;
+  const name = lazy(() => chunk.name);
+  const isEntry = lazy(() => chunk.isEntry);
+  const isDynamicEntry = lazy(() => chunk.isDynamicEntry);
+  const facadeModuleId = lazy(() => chunk.facadeModuleId);
+  const moduleIds = lazy(() => chunk.moduleIds);
+  const exports = lazy(() => chunk.exports);
+  const fileName = lazy(() => chunk.fileName);
+  const imports = lazy(() => chunk.imports);
+  const dynamicImports = lazy(() => chunk.dynamicImports);
+  const modules = lazy(() => transformChunkModules(chunk.modules));
   return {
     type: 'chunk',
     get name() {
-      return chunk.name;
+      return name();
     },
     get isEntry() {
-      return chunk.isEntry;
+      return isEntry();
     },
     get isDynamicEntry() {
-      return chunk.isDynamicEntry;
+      return isDynamicEntry();
     },
     get facadeModuleId() {
-      return chunk.facadeModuleId;
+      return facadeModuleId();
     },
     get moduleIds() {
-      return chunk.moduleIds;
+      return moduleIds();
     },
     get exports() {
-      return chunk.exports;
+      return exports();
     },
     get fileName() {
-      return chunk.fileName;
+      return fileName();
     },
     get imports() {
-      return chunk.imports;
+      return imports();
     },
     get dynamicImports() {
-      return chunk.dynamicImports;
+      return dynamicImports();
     },
     get modules() {
-      if (!modules) {
-        modules = transformChunkModules(chunk.modules);
-      }
-      return modules;
+      return modules();
     },
   };
 }
