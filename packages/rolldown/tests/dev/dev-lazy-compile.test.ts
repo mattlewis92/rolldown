@@ -865,3 +865,69 @@ test('a repeat lazy import after an HMR update sees the new exports', async () =
   const second = await runtime.requestLazy(id, proxyId);
   expect(second.v).toBe('v2');
 });
+
+// A page never loads a lazy route from the build output: every lazy `import()` is a
+// `requestLazy` call. So once a route is fetched, later full builds must not chunk it,
+// and the route must still compile from the cache.
+test(
+  'a fetched lazy route stays out of later full builds',
+  { timeout: TEST_TIMEOUT },
+  async ({ onTestFinished }) => {
+    const uniqueId = crypto.randomUUID().slice(0, 8);
+    const dir = path.join(import.meta.dirname, 'temp', `dev-lazy-fetched-route-${uniqueId}`);
+    const distDir = path.join(dir, 'dist');
+    fs.mkdirSync(dir, { recursive: true });
+    const main = path.join(dir, 'main.js');
+    fs.writeFileSync(main, `import('./route.js');\nconsole.log('main-v1');\n`);
+    fs.writeFileSync(
+      path.join(dir, 'route.js'),
+      `import { dep } from './route-dep.js';\nexport const route = dep + '-route';\n`,
+    );
+    fs.writeFileSync(
+      path.join(dir, 'route-dep.js'),
+      `export const dep = 'route-dep-body';\nconsole.log(dep);\n`,
+    );
+
+    const engine = await dev(
+      { input: main, experimental: { devMode: { lazy: true } } },
+      { dir: distDir },
+      {},
+    );
+
+    onTestFinished(async () => {
+      await engine.close();
+      if (!process.env.CI) {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    const readDist = () =>
+      fs
+        .readdirSync(distDir)
+        .filter((file) => file.endsWith('.js'))
+        .map((file) => fs.readFileSync(path.join(distDir, file), 'utf8'))
+        .join('\n');
+
+    await engine.run();
+
+    const proxyId = `${path.join(dir, 'route.js')}?rolldown-lazy=1`;
+    await engine.registerClient('first-client');
+    const fetched = await engine.compileEntry(proxyId, 'first-client');
+    expect(fetched.code).toContain('route-dep-body');
+
+    fs.writeFileSync(main, `import('./route.js');\nconsole.log('main-v2');\n`);
+    await expect
+      .poll(async () => {
+        await engine.ensureLatestBuildOutput();
+        return readDist();
+      })
+      .toContain('main-v2');
+
+    const output = readDist();
+    expect(output).toContain('requestLazy');
+    expect(output).not.toContain('route-dep-body');
+
+    const again = await engine.compileEntry(proxyId, 'second-client');
+    expect(again.code).toContain('route-dep-body');
+  },
+);

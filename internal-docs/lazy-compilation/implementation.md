@@ -23,7 +23,7 @@ Data shared across all connected browser tabs:
 | Build Output      | Bundled JS files on disk/memory                                         |
 | Watched Files     | Files monitored for changes                                             |
 
-**Key behavior**: Once a lazy module is fetched by any client, the graph keeps the proxy in fetched form and holds the route's modules. The build output is refreshed after lazy compilation, but pages still load every lazy route through a `/lazy` request: the full build emits `requestLazy` for every proxy.
+**Key behavior**: Once a lazy module is fetched by any client, the graph keeps the proxy in fetched form and holds the route's modules. Pages still load every lazy route through a `/lazy` request: the full build emits `requestLazy` for every proxy. So the full build does not chunk a fetched route: the link stage drops a dynamic entry whose only `import()` importers are lazy proxies (`drop_fetched_lazy_routes`), and the modules only the route reaches stay out of every chunk. A route the entry graph also imports statically, or that something else imports with `import()`, is still bundled.
 
 ### Client Scope
 
@@ -64,7 +64,7 @@ Per-client outcomes when a fetched lazy module is later edited (see "Editing a f
 After successful lazy compilation, `DevEngine` sends the coordinator `LazyCompiled`, carrying the watch list the compile wrote to. The coordinator registers that list and does nothing else:
 
 - The list holds the files the compile loaded. The latest build's list can miss them, because a build that starts before the coordinator handles the message begins with an empty list (see [dev-engine §15](../dev-engine/implementation.md)); this step is what makes later edits to the lazy module trigger updates at all
-- No rebuild is queued and the output is not marked stale. No page loads the route from the build output: every lazy `import()` calls `requestLazy`. The compile's partial scan re-ran the proxy's `load` hook (now the fetched template) and merged the route into the scan cache, so the next build of any kind links it without listing the proxy as changed
+- No rebuild is queued and the output is not marked stale. No page loads the route from the build output: every lazy `import()` calls `requestLazy`. The compile's partial scan re-ran the proxy's `load` hook (now the fetched template) and merged the route into the scan cache, so the next build of any kind links it without listing the proxy as changed, and leaves it out of the chunks
 - A rebuild per compile used to hold the bundler lock while the page waited on its next lazy route, so each navigation in a large app waited out the previous route's link and generate
 
 A successful background rebuild is **silent** to connected clients: output is swapped in place and no websocket message is sent (the running page keeps the code it got from `/lazy`). A reload fires only if a `FullReload` was already pending or the server is recovering from a previously-broadcast build error. One exception: while a lost HMR update is pending, this `Rebuild` becomes a full build and sends `FullReload` to every client, with the proxy id in `changedFiles` (see [dev-engine §9b](../dev-engine/implementation.md)). `Rebuild` tasks never generate HMR updates and merge only with other `Rebuild`s, so the `?rolldown-lazy=1` pseudo-path can never leak into HMR-update computation — though plugins do observe it once through the `watch_change` hook.

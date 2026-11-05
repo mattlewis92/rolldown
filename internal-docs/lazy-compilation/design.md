@@ -11,7 +11,7 @@
 5. **Dev server returns JS directly** - `/@vite/lazy` returns the compiled code as a single JS string; the browser loads it as an ES module (only inline sourcemaps survive — see implementation.md)
 6. **Module IDs** - runtime module-map lookups use **stable IDs** (cwd-relative); absolute paths appear only in the proxy id that `requestLazy` passes to `loadLazyChunk` (sent as the `/@vite/lazy?id=` param) and the fetched template's `import($MODULE_ID)`
 7. **Proxy module states** - a proxy is a server-side graph node, never fetched as a chunk. Two states: **not fetched** (empty body, keeps the real module out of the build) and **fetched** (imports the real module, rooting the partial scan)
-8. **No build output refresh** - a lazy compile queues no rebuild: pages load routes through `requestLazy`, never from the build output, and the next build links the route from the scan cache
+8. **No build output refresh** - a lazy compile queues no rebuild: pages load routes through `requestLazy`, never from the build output. The next build links the route from the scan cache but leaves it out of every chunk
 9. **Dedup** - the server skips modules whose current copy the client already holds (its ship map + boot-evaluated map, `HmrStage::compile_lazy_entry`); in the browser `initModule` runs a factory only when the module is not yet in the module cache — a shared module never executes twice
 10. **Error handling** - unknown module ids are rejected (security gate, #9969); init errors in lazy modules reject the consumer's `await import()` catchably (#9981)
 11. **ClientId** - browser-generated id per tab (Vite's `bundledDevClient.ts`); selects the per-client `ClientSession` (`crates/rolldown_dev/src/types/client_session.rs`) whose ship map and boot-evaluated map size the lazy chunk
@@ -144,7 +144,7 @@ Returns the **fetched template** (`proxy-module-template-fetched.js`), which imp
 import($MODULE_ID);
 ```
 
-This body is not executed either. Its `import($MODULE_ID)` matters at **scan** time only: it is the edge `compile_lazy_entry` follows to pull the real module and its dependencies into the partial build, and it keeps a fetched route in later builds. `$MODULE_ID` is the absolute path, used for resolution only.
+This body is not executed either. Its `import($MODULE_ID)` matters at **scan** time only: it is the edge `compile_lazy_entry` follows to pull the real module and its dependencies into the partial build, and it keeps a fetched route in the module graph of later builds, so the route stays watched and hot-updatable. Later full builds do not chunk the route: the link stage drops a dynamic entry whose only `import()` importers are lazy proxies (`drop_fetched_lazy_routes`), because no page loads a route from the build output. `$MODULE_ID` is the absolute path, used for resolution only.
 
 The state transition is managed by `LazyCompilationContext.mark_as_fetched()`.
 

@@ -238,7 +238,7 @@ impl<'any, 'ast> HmrAstBuilder<'any, 'ast> for ScopeHoistingFinalizer<'any, 'ast
   }
 }
 
-const LAZY_PROXY_QUERY: &str = "?rolldown-lazy=1";
+pub const LAZY_PROXY_QUERY: &str = "?rolldown-lazy=1";
 
 /// The id of the module a lazy proxy stands for: the id its chunk registers a factory under.
 /// `None` when `stable_id` is not a lazy proxy.
