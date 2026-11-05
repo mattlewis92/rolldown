@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::{ConstExportMeta, ImportAttribute, SourcemapChainElement};
 use arcstr::ArcStr;
 use bitflags::bitflags;
@@ -135,7 +137,14 @@ pub struct EcmaView {
   pub imports: FxHashMap<NodeId, ImportRecordIdx>,
   pub exports_kind: ExportsKind,
   pub default_export_ref: SymbolRef,
-  pub sourcemap_chain: Vec<SourcemapChainElement>,
+  /// Built once by the scan and only read after it. Shared so that cloning the
+  /// module table for every incremental build does not deep-copy each module's
+  /// source maps.
+  #[expect(
+    clippy::rc_buffer,
+    reason = "the scan reorders a fresh chain by taking the Vec back out, which Arc<[T]> cannot do without copying"
+  )]
+  pub sourcemap_chain: Arc<Vec<SourcemapChainElement>>,
   // the ids of all modules that statically import this module
   pub importers: FxIndexSet<ModuleId>,
   pub importers_idx: FxIndexSet<ModuleIdx>,
